@@ -1,6 +1,5 @@
 from django.urls import path
 from authentication.views import (
-    CustomerRegisterView,
     SellerRegisterView,
     LoginView,
     TokenRefreshView,
@@ -10,8 +9,7 @@ from authentication.views import (
 )
 
 urlpatterns = [
-    path('register/customer/', CustomerRegisterView.as_view(), name='customer-register'),
-    path('register/seller/', SellerRegisterView.as_view(), name='seller-register'),
+    path('register/', SellerRegisterView.as_view(), name='seller-register'),
     path('login/', LoginView.as_view(), name='login'),
     path('token/refresh/', TokenRefreshView.as_view(), name='token-refresh'),
     path('profile/', ProfileView.as_view(), name='profile'),

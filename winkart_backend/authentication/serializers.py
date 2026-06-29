@@ -1,16 +1,5 @@
 from rest_framework import serializers
 
-class CustomerRegisterSerializer(serializers.Serializer):
-    name = serializers.CharField(max_length=100)
-    email = serializers.EmailField(required=False, allow_null=True)
-    phone = serializers.CharField(max_length=20, required=False, allow_null=True)
-    password = serializers.CharField(write_only=True, min_length=6)
-
-    def validate(self, attrs):
-        if not attrs.get('email') and not attrs.get('phone'):
-            raise serializers.ValidationError("Either email or phone is required for registration.")
-        return attrs
-
 class SellerRegisterSerializer(serializers.Serializer):
     name = serializers.CharField(max_length=100)
     email = serializers.EmailField(required=False, allow_null=True)

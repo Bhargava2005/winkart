@@ -1,151 +1,127 @@
+"""
+verify_backend.py — End-to-end API test for the updated Winkart backend.
+
+New Architecture:
+- NO customer accounts / registration
+- Seller logs in and manages their shop
+- Seller enables Customer Interface mode → customer browses on seller's device
+- Cart is public and scoped by seller_id
+- Seller finalises checkout (generates bill)
+"""
+
 import requests
 import json
-import time
-import os
+import io
 import pandas as pd
-from bson import ObjectId
 from pymongo import MongoClient
 
-# Database Cleanup Helper
+BASE_URL = 'http://127.0.0.1:8000/api'
+
+
 def cleanup_mongodb():
+    """Remove all test data before and after tests."""
     client = MongoClient('mongodb://localhost:27017/')
     db = client['winkart_db']
-    db['users'].delete_many({'email': {'$in': ['test_customer@winkart.com', 'test_seller@winkart.com']}})
+    db['users'].delete_many({'email': 'test_seller@winkart.com'})
     db['categories'].delete_many({'slug': {'$in': ['test-electronics', 'test-smartphones']}})
-    # Clean products listed by test seller
-    # Find test seller first
+
     seller = db['users'].find_one({'email': 'test_seller@winkart.com'})
     if seller:
-        db['products'].delete_many({'shop_id': str(seller['_id'])})
-        db['banners'].delete_many({'shop_id': str(seller['_id'])})
-        db['bills'].delete_many({'shop_id': str(seller['_id'])})
-        db['import_logs'].delete_many({'seller_id': str(seller['_id'])})
-    # Remove test carts
-    db['carts'].delete_many({})
-    print("Database cleaned up successfully.")
+        sid = str(seller['_id'])
+        db['products'].delete_many({'shop_id': sid})
+        db['banners'].delete_many({'shop_id': sid})
+        db['bills'].delete_many({'shop_id': sid})
+        db['carts'].delete_many({'seller_id': sid})
+        db['import_logs'].delete_many({'seller_id': sid})
+
+    print("Database cleaned up.\n")
+
 
 def run_tests():
-    BASE_URL = 'http://127.0.0.1:8000/api'
-    
-    # 1. Cleanup database first
     cleanup_mongodb()
-    
-    # Create session
+
     sess = requests.Session()
-    
-    print("\n--- Testing Registration & Authentication ---")
-    
-    # Register Customer
-    cust_reg_payload = {
-        "name": "Test Customer",
-        "email": "test_customer@winkart.com",
-        "phone": "9999988888",
-        "password": "securepassword123"
-    }
-    r = sess.post(f"{BASE_URL}/auth/register/customer/", json=cust_reg_payload)
-    print("Customer Register:", r.status_code, r.json().get('message'))
-    assert r.status_code == 201
-    
-    # Register Seller
-    seller_reg_payload = {
+
+    # ─────────────────────────────────────────────
+    # 1. SELLER REGISTRATION & LOGIN
+    # ─────────────────────────────────────────────
+    print("=== 1. Seller Registration & Login ===")
+
+    r = sess.post(f"{BASE_URL}/auth/register/", json={
         "name": "Test Seller",
         "email": "test_seller@winkart.com",
         "phone": "8888899999",
         "password": "securepassword123",
         "shop_name": "Test Supermart",
         "shop_address": "456 Tech Park, Bengaluru, Karnataka"
-    }
-    r = sess.post(f"{BASE_URL}/auth/register/seller/", json=seller_reg_payload)
+    })
     print("Seller Register:", r.status_code, r.json().get('message'))
     assert r.status_code == 201
-    
-    # Login Seller
-    login_payload = {
+
+    r = sess.post(f"{BASE_URL}/auth/login/", json={
         "email": "test_seller@winkart.com",
         "password": "securepassword123"
-    }
-    r = sess.post(f"{BASE_URL}/auth/login/", json=login_payload)
+    })
     print("Seller Login:", r.status_code)
     assert r.status_code == 200
-    seller_tokens = r.json()['tokens']
+    tokens = r.json()['tokens']
     seller_id = r.json()['user']['id']
-    
-    # Login Customer
-    login_payload = {
-        "email": "test_customer@winkart.com",
-        "password": "securepassword123"
-    }
-    r = sess.post(f"{BASE_URL}/auth/login/", json=login_payload)
-    print("Customer Login:", r.status_code)
-    assert r.status_code == 200
-    customer_tokens = r.json()['tokens']
-    customer_id = r.json()['user']['id']
-    
-    # Headers
-    seller_headers = {'Authorization': f"Bearer {seller_tokens['access']}"}
-    customer_headers = {'Authorization': f"Bearer {customer_tokens['access']}"}
-    
-    print("\n--- Testing Profile & Seller Configuration ---")
-    
-    # Get profile
-    r = sess.get(f"{BASE_URL}/auth/profile/", headers=customer_headers)
+    seller_headers = {'Authorization': f"Bearer {tokens['access']}"}
+    print(f"Seller ID: {seller_id}\n")
+
+    # ─────────────────────────────────────────────
+    # 2. SELLER PROFILE & SETTINGS
+    # ─────────────────────────────────────────────
+    print("=== 2. Seller Profile & Settings ===")
+
+    r = sess.get(f"{BASE_URL}/auth/profile/", headers=seller_headers)
     print("Get Profile:", r.status_code, r.json().get('name'))
     assert r.status_code == 200
-    
-    # Update Seller Settings (Map Coordinates & Hours)
-    settings_payload = {
+
+    r = sess.put(f"{BASE_URL}/auth/seller/settings/", json={
         "shop_description": "All your tech gadgets in one place.",
-        "location": {
-            "latitude": 12.9716,
-            "longitude": 77.5946
-        },
+        "location": {"latitude": 12.9716, "longitude": 77.5946},
         "business_hours": {
             "monday": {"is_open": True, "open_time": "08:00", "close_time": "22:00"}
         }
-    }
-    r = sess.put(f"{BASE_URL}/auth/seller/settings/", json=settings_payload, headers=seller_headers)
-    print("Update Seller Settings:", r.status_code, r.json().get('message'))
+    }, headers=seller_headers)
+    print("Update Settings:", r.status_code, r.json().get('message'))
     assert r.status_code == 200
-    
-    print("\n--- Testing Geospatial Shop Listing ---")
-    
-    # Search nearby shops (within 50km of Bengaluru)
-    r = sess.get(f"{BASE_URL}/core/shops/?latitude=12.9700&longitude=77.5900")
-    print("Geospatial Shop Search (Found):", r.status_code, len(r.json()))
-    assert r.status_code == 200
-    assert len(r.json()) > 0
-    assert r.json()[0]['shop_name'] == "Test Supermart"
-    
-    print("\n--- Testing Categories & Catalog Management ---")
-    
-    # Create L1 Category
-    cat_l1_payload = {
+    print()
+
+    # ─────────────────────────────────────────────
+    # 3. CATEGORY MANAGEMENT
+    # ─────────────────────────────────────────────
+    print("=== 3. Category Management ===")
+
+    r = sess.post(f"{BASE_URL}/core/categories/", json={
         "name": "Electronics",
         "slug": "test-electronics"
-    }
-    r = sess.post(f"{BASE_URL}/core/categories/", json=cat_l1_payload, headers=seller_headers)
+    }, headers=seller_headers)
     print("Create L1 Category:", r.status_code, r.json().get('name'))
     assert r.status_code == 201
     l1_id = r.json()['id']
-    
-    # Create L2 Category (Sub-category)
-    cat_l2_payload = {
+
+    r = sess.post(f"{BASE_URL}/core/categories/", json={
         "name": "Smartphones",
         "slug": "test-smartphones",
         "parent_id": l1_id
-    }
-    r = sess.post(f"{BASE_URL}/core/categories/", json=cat_l2_payload, headers=seller_headers)
+    }, headers=seller_headers)
     print("Create L2 Category:", r.status_code, r.json().get('name'))
     assert r.status_code == 201
     l2_id = r.json()['id']
-    
-    # List categories
-    r = sess.get(f"{BASE_URL}/core/categories/")
-    print("List Categories count:", r.status_code, len(r.json()))
+
+    r = sess.get(f"{BASE_URL}/core/categories/", headers=seller_headers)
+    print("List Categories:", r.status_code, "Count:", len(r.json()))
     assert r.status_code == 200
-    
-    # Create Products
-    prod1_payload = {
+    print()
+
+    # ─────────────────────────────────────────────
+    # 4. PRODUCT MANAGEMENT
+    # ─────────────────────────────────────────────
+    print("=== 4. Product Management ===")
+
+    r = sess.post(f"{BASE_URL}/core/products/", json={
         "name": "Phone Max Pro 14",
         "description": "High end premium phone",
         "price": 79999.00,
@@ -153,13 +129,12 @@ def run_tests():
         "category_id": l2_id,
         "stock_quantity": 50,
         "attributes": {"brand": "Apple", "color": "Deep Purple"}
-    }
-    r = sess.post(f"{BASE_URL}/core/products/", json=prod1_payload, headers=seller_headers)
+    }, headers=seller_headers)
     print("Create Product 1:", r.status_code, r.json().get('name'))
     assert r.status_code == 201
     prod1_id = r.json()['id']
-    
-    prod2_payload = {
+
+    r = sess.post(f"{BASE_URL}/core/products/", json={
         "name": "Phone Charger Fast 30W",
         "description": "30W fast charging adaptor",
         "price": 1999.00,
@@ -167,135 +142,168 @@ def run_tests():
         "category_id": l2_id,
         "stock_quantity": 200,
         "attributes": {"brand": "Apple", "type": "USB-C"}
-    }
-    r = sess.post(f"{BASE_URL}/core/products/", json=prod2_payload, headers=seller_headers)
+    }, headers=seller_headers)
     print("Create Product 2:", r.status_code, r.json().get('name'))
     assert r.status_code == 201
     prod2_id = r.json()['id']
-    
-    # List shop details (checking sub-categories based on listed products)
-    r = sess.get(f"{BASE_URL}/core/shops/{seller_id}/")
-    print("Get Shop Details with categories:", r.status_code, len(r.json()['categories']))
+
+    r = sess.get(f"{BASE_URL}/core/products/", headers=seller_headers)
+    print("List Seller Products:", r.status_code, "Count:", len(r.json()))
     assert r.status_code == 200
-    assert len(r.json()['categories']) > 0
-    
-    print("\n--- Testing Marketing & Recommendation Configurations ---")
-    
-    # Configure Product 2 as a Cross-sell recommendation for Product 1
-    rec_payload = {
+    print()
+
+    # ─────────────────────────────────────────────
+    # 5. UPSELL / CROSS-SELL CONFIGURATION
+    # ─────────────────────────────────────────────
+    print("=== 5. Recommendations Configuration ===")
+
+    r = sess.post(f"{BASE_URL}/marketing/recommendations/configure/", json={
         "product_id": prod1_id,
         "type": "cross_sell",
         "linked_product_ids": [prod2_id]
-    }
-    r = sess.post(f"{BASE_URL}/marketing/recommendations/configure/", json=rec_payload, headers=seller_headers)
+    }, headers=seller_headers)
     print("Configure Cross-sell:", r.status_code, r.json().get('message'))
     assert r.status_code == 200
-    
-    # Fetch Recommendations for Product 1
+
     r = sess.get(f"{BASE_URL}/marketing/recommendations/{prod1_id}/")
-    print("Fetch Recommendations count:", r.status_code, len(r.json()['cross_sell_recommendations']))
+    print("Fetch Recommendations:", r.status_code,
+          "Cross-sell count:", len(r.json()['cross_sell_recommendations']))
     assert r.status_code == 200
     assert len(r.json()['cross_sell_recommendations']) == 1
-    assert r.json()['cross_sell_recommendations'][0]['name'] == "Phone Charger Fast 30W"
-    
-    print("\n--- Testing Cart & Billing Flow ---")
-    
-    # Add items to customer cart
-    cart_payload = {
-        "shop_id": seller_id,
+    print()
+
+    # ─────────────────────────────────────────────
+    # 6. CUSTOMER INTERFACE — PUBLIC BROWSING
+    #    (No auth — seller hands device to customer)
+    # ─────────────────────────────────────────────
+    print("=== 6. Customer Interface (Public) ===")
+
+    # Shop home — shows shop info, banners, categories
+    r = sess.get(f"{BASE_URL}/core/customer/{seller_id}/shop/")
+    print("Customer Shop Home:", r.status_code,
+          "Shop:", r.json()['shop']['shop_name'],
+          "| Categories:", len(r.json()['categories']))
+    assert r.status_code == 200
+    assert r.json()['shop']['shop_name'] == "Test Supermart"
+    assert len(r.json()['categories']) > 0
+
+    # Browse products
+    r = sess.get(f"{BASE_URL}/core/customer/{seller_id}/products/")
+    print("Customer Browse Products:", r.status_code, "Count:", len(r.json()))
+    assert r.status_code == 200
+    assert len(r.json()) == 2
+
+    # Search products
+    r = sess.get(f"{BASE_URL}/core/customer/{seller_id}/products/?search=Phone+Max")
+    print("Customer Product Search:", r.status_code, "Found:", len(r.json()))
+    assert r.status_code == 200
+
+    # Single product with recommendations
+    r = sess.get(f"{BASE_URL}/core/customer/{seller_id}/products/{prod1_id}/")
+    print("Customer Product Detail:", r.status_code, r.json()['name'],
+          "| Cross-sell:", len(r.json()['cross_sell_products']))
+    assert r.status_code == 200
+    assert len(r.json()['cross_sell_products']) == 1
+    print()
+
+    # ─────────────────────────────────────────────
+    # 7. CART — PUBLIC, seller_id scoped
+    # ─────────────────────────────────────────────
+    print("=== 7. Cart (Public, Seller-scoped) ===")
+
+    r = sess.post(f"{BASE_URL}/operations/cart/{seller_id}/", json={
         "items": [
             {"product_id": prod1_id, "quantity": 1},
             {"product_id": prod2_id, "quantity": 2}
         ]
-    }
-    r = sess.post(f"{BASE_URL}/operations/cart/", json=cart_payload, headers=customer_headers)
-    print("Update Customer Cart:", r.status_code, r.json().get('message'))
+    })
+    print("Update Cart:", r.status_code, r.json().get('message'))
     assert r.status_code == 200
-    
-    # View cart details
-    r = sess.get(f"{BASE_URL}/operations/cart/", headers=customer_headers)
-    print("Get Cart:", r.status_code, "Total items:", r.json()['total_items'])
+
+    r = sess.get(f"{BASE_URL}/operations/cart/{seller_id}/")
+    print("Get Cart:", r.status_code,
+          "Items:", r.json()['total_items'],
+          "| Subtotal: Rs.", r.json()['subtotal'])
     assert r.status_code == 200
     assert r.json()['total_items'] == 3
-    
-    # Checkout and generate a Bill
-    checkout_payload = {
-        "customer_name": "Test Customer",
+    print()
+
+    # ─────────────────────────────────────────────
+    # 8. CHECKOUT — Seller authenticates and generates bill
+    # ─────────────────────────────────────────────
+    print("=== 8. Checkout & Billing ===")
+
+    r = sess.post(f"{BASE_URL}/operations/checkout/{seller_id}/", json={
+        "customer_name": "Walk-in Customer",
         "customer_phone": "9999988888"
-    }
-    r = sess.post(f"{BASE_URL}/operations/checkout/", json=checkout_payload, headers=customer_headers)
-    print("Checkout (Generate Bill):", r.status_code, "Bill Number:", r.json().get('bill_number'))
+    }, headers=seller_headers)
+    print("Checkout (Generate Bill):", r.status_code, "Bill:", r.json().get('bill_number'))
     assert r.status_code == 201
     bill_id = r.json()['bill_id']
-    
-    # Customer previous bills history
-    r = sess.get(f"{BASE_URL}/operations/bills/customer/", headers=customer_headers)
-    print("Customer Bills History:", r.status_code, "Bills count:", len(r.json()))
+
+    r = sess.get(f"{BASE_URL}/operations/bills/", headers=seller_headers)
+    print("Seller Bills List:", r.status_code, "Count:", len(r.json()))
     assert r.status_code == 200
     assert len(r.json()) > 0
-    
-    # Seller bills list (Dashboard)
-    r = sess.get(f"{BASE_URL}/operations/bills/seller/", headers=seller_headers)
-    print("Seller Bills Dashboard:", r.status_code, "Bills count:", len(r.json()))
+
+    r = sess.put(f"{BASE_URL}/operations/bills/{bill_id}/",
+                 json={"status": "Paid"}, headers=seller_headers)
+    print("Mark Bill as Paid:", r.status_code, r.json().get('message'))
     assert r.status_code == 200
-    assert len(r.json()) > 0
-    
-    # Seller updates Bill Status to Paid
-    r = sess.put(f"{BASE_URL}/operations/bills/{bill_id}/", json={"status": "Paid"}, headers=seller_headers)
-    print("Seller Updates Bill Status to Paid:", r.status_code, r.json().get('message'))
-    assert r.status_code == 200
-    
-    # Dynamic Invoice PDF Download
+    print()
+
+    # ─────────────────────────────────────────────
+    # 9. PDF INVOICE DOWNLOAD
+    # ─────────────────────────────────────────────
+    print("=== 9. PDF Invoice Download ===")
+
     r = sess.get(f"{BASE_URL}/operations/bills/{bill_id}/download/")
-    print("Download Invoice PDF:", r.status_code, "Content length:", len(r.content))
+    print("Download Invoice PDF:", r.status_code, "Bytes:", len(r.content))
     assert r.status_code == 200
     assert r.headers['Content-Type'] == 'application/pdf'
-    
-    print("\n--- Testing Excel Exports ---")
-    
-    # Export Bills
-    r = sess.get(f"{BASE_URL}/operations/products/export/?type=bills&export_format=excel", headers=seller_headers)
-    print("Export Bills Excel:", r.status_code, "Content length:", len(r.content))
-    assert r.status_code == 200
-    assert 'spreadsheet' in r.headers['Content-Type'] or 'excel' in r.headers['Content-Type']
-    
-    print("\n--- Testing Excel Bulk Imports ---")
-    # Generate dummy excel for import testing
-    import io
-    df = pd.DataFrame([
-        {
-            "name": "Phone Pro Max 15",
-            "price": 99999.00,
-            "category_slug": "test-smartphones",
-            "description": "New model 15 phone",
-            "discount_price": 94999.00,
-            "stock_quantity": 25,
-            "attributes": "brand:Apple,color:Natural Titanium"
-        }
-    ])
+    print()
+
+    # ─────────────────────────────────────────────
+    # 10. EXCEL IMPORT / EXPORT
+    # ─────────────────────────────────────────────
+    print("=== 10. Excel Import / Export ===")
+
+    # Build sample excel
+    df = pd.DataFrame([{
+        "name": "Wireless Earbuds Pro",
+        "price": 2999.00,
+        "category_slug": "test-smartphones",
+        "description": "Premium wireless earbuds",
+        "discount_price": 2499.00,
+        "stock_quantity": 100,
+        "attributes": "brand:Apple,type:Wireless"
+    }])
     xlsx_buffer = io.BytesIO()
     with pd.ExcelWriter(xlsx_buffer, engine='openpyxl') as writer:
         df.to_excel(writer, index=False)
     xlsx_buffer.seek(0)
-    xlsx_data = xlsx_buffer.getvalue()
-    
-    # Perform import
-    files = {'file': ('import_test.xlsx', xlsx_data, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
+
+    files = {'file': ('import_test.xlsx', xlsx_buffer.getvalue(),
+                      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
     r = sess.post(f"{BASE_URL}/operations/products/import/", files=files, headers=seller_headers)
-    print("Bulk Excel Import Products:", r.status_code, "Success count:", r.json().get('success_count'))
+    print("Excel Import:", r.status_code, "Success:", r.json().get('success_count'))
     assert r.status_code == 200
     assert r.json().get('success_count') == 1
-    
-    # View import history logs
+
     r = sess.get(f"{BASE_URL}/operations/products/import/history/", headers=seller_headers)
-    print("Seller Import History Logs:", r.status_code, "Logs count:", len(r.json()))
+    print("Import History:", r.status_code, "Logs:", len(r.json()))
     assert r.status_code == 200
-    assert len(r.json()) > 0
-    
-    # 2. Cleanup database after tests
+
+    r = sess.get(f"{BASE_URL}/operations/products/export/?type=bills&export_format=excel",
+                 headers=seller_headers)
+    print("Export Bills Excel:", r.status_code, "Bytes:", len(r.content))
+    assert r.status_code == 200
+    assert 'spreadsheet' in r.headers['Content-Type'] or 'excel' in r.headers['Content-Type']
+    print()
+
     cleanup_mongodb()
-    
-    print("\nALL BACKEND API TESTS COMPLETED SUCCESSFULLY!")
+    print("ALL BACKEND API TESTS PASSED SUCCESSFULLY!")
+
 
 if __name__ == "__main__":
     run_tests()

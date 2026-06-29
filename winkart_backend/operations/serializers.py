@@ -5,7 +5,7 @@ class CartItemSerializer(serializers.Serializer):
     quantity = serializers.IntegerField(min_value=1)
 
 class CartSerializer(serializers.Serializer):
-    shop_id = serializers.CharField(required=True)
+    # seller_id is passed as a URL path parameter — not in the request body
     items = CartItemSerializer(many=True, required=True)
 
 class CheckoutSerializer(serializers.Serializer):

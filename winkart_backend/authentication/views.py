@@ -10,7 +10,6 @@ from bson import ObjectId
 
 from winkart_backend.database import users_col
 from authentication.serializers import (
-    CustomerRegisterSerializer,
     SellerRegisterSerializer,
     LoginSerializer,
     TokenRefreshSerializer,
@@ -18,60 +17,6 @@ from authentication.serializers import (
     SellerSettingsSerializer
 )
 from authentication.auth import generate_tokens, decode_token, MongoUser
-
-class CustomerRegisterView(APIView):
-    """Customer signup endpoint."""
-    authentication_classes = []
-    permission_classes = []
-
-    def post(self, request):
-        serializer = CustomerRegisterSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
-        data = serializer.validated_data
-        email = data.get('email')
-        phone = data.get('phone')
-        
-        # Check if already exists
-        query = []
-        if email:
-            query.append({'email': email})
-        if phone:
-            query.append({'phone': phone})
-            
-        if query:
-            existing = users_col.find_one({'$or': query})
-            if existing:
-                return Response(
-                    {'error': 'A user with this email or phone already exists.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-                
-        user_doc = {
-            'name': data['name'],
-            'email': email,
-            'phone': phone,
-            'password': make_password(data['password']),
-            'role': 'customer',
-            'profile_image': None,
-            'created_at': datetime.now(timezone.utc)
-        }
-        
-        result = users_col.insert_one(user_doc)
-        tokens = generate_tokens(result.inserted_id, 'customer')
-        
-        return Response({
-            'message': 'Customer registered successfully.',
-            'user': {
-                'id': str(result.inserted_id),
-                'name': user_doc['name'],
-                'email': user_doc['email'],
-                'phone': user_doc['phone'],
-                'role': 'customer'
-            },
-            'tokens': tokens
-        }, status=status.HTTP_201_CREATED)
 
 class SellerRegisterView(APIView):
     """Seller signup endpoint."""
@@ -148,7 +93,7 @@ class SellerRegisterView(APIView):
         }, status=status.HTTP_201_CREATED)
 
 class LoginView(APIView):
-    """Unified login endpoint for Customers and Sellers."""
+    """Seller login endpoint. Only sellers can log in — no customer accounts exist."""
     authentication_classes = []
     permission_classes = []
 
@@ -156,44 +101,48 @@ class LoginView(APIView):
         serializer = LoginSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-            
+
         data = serializer.validated_data
         email = data.get('email')
         phone = data.get('phone')
         password = data['password']
-        
+
         # Build query
         query = {}
         if email:
             query['email'] = email
         elif phone:
             query['phone'] = phone
-            
+
         user_dict = users_col.find_one(query)
-        if not user_dict or not check_password(password, user_dict['password']):
+
+        # Only sellers are permitted to log in
+        if not user_dict or user_dict.get('role') != 'seller':
+            return Response(
+                {'error': 'Invalid credentials. Only registered sellers can log in.'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        if not check_password(password, user_dict['password']):
             return Response(
                 {'error': 'Invalid credentials.'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
-            
-        tokens = generate_tokens(user_dict['_id'], user_dict['role'])
-        
-        response_data = {
+
+        tokens = generate_tokens(user_dict['_id'], 'seller')
+
+        return Response({
             'message': 'Login successful.',
             'user': {
                 'id': str(user_dict['_id']),
                 'name': user_dict['name'],
                 'email': user_dict.get('email'),
                 'phone': user_dict.get('phone'),
-                'role': user_dict['role']
+                'role': 'seller',
+                'shop_name': user_dict.get('shop_name')
             },
             'tokens': tokens
-        }
-        
-        if user_dict['role'] == 'seller':
-            response_data['user']['shop_name'] = user_dict.get('shop_name')
-            
-        return Response(response_data, status=status.HTTP_200_OK)
+        }, status=status.HTTP_200_OK)
 
 class TokenRefreshView(APIView):
     """Refreshes access token using refresh token."""
