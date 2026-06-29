@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "Winkart",
+    "slug": "winkart",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "light",
+    "scheme": "winkart",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.winkart.app"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/icon.png",
+        "backgroundColor": "#3D5AFE"
+      },
+      "package": "com.winkart.app"
+    },
+    "web": {
+      "favicon": "./assets/icon.png",
+      "bundler": "metro"
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
